@@ -19,6 +19,9 @@ export const config = {
   githubRepo: required("GITHUB_REPO"),
   vercelToken: required("VERCEL_TOKEN"),
   vercelTeamId: process.env.VERCEL_TEAM_ID || undefined,
+  googleServiceAccountJson: required("GOOGLE_SERVICE_ACCOUNT_JSON"),
+  publicUrl: required("PUBLIC_URL").replace(/\/+$/, ""),
+  port: Number(process.env.PORT) || 3000,
 };
 
 export const [githubOwner, githubRepoName] = config.githubRepo.split("/");

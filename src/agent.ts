@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { config, TEMPLATES } from "./config.js";
 import { readTemplate, readClientSite, writeClientSite } from "./tools/github.js";
 import { ensureVercelProject, triggerDeploy } from "./tools/vercel.js";
+import { ensureRsvpSheet } from "./tools/google.js";
 
 const anthropic = new Anthropic({ apiKey: config.anthropicApiKey });
 
@@ -12,11 +13,33 @@ Templates available: ${TEMPLATES.join(", ")}.
 Folder convention: <template>/<slug>/index.html. Slugs are lowercase, hyphenated, derived from the couple's names (strip & / "and"). Example: "Sarah Ahmed & Tom Wright" -> "sarah-ahmed-tom-wright".
 
 Rules:
-- For NEW clients: call readTemplate(color), apply the user's details (names, date, venue, RSVP, section add/remove), then writeClientSite(color, slug, html, commitMessage). Preserve the template's structure, styling, and script tags — only change copy/dates and add/remove sections the user asked for.
+- For NEW clients: call readTemplate(color), apply the user's details (names, date, venue, section add/remove), then wire up RSVP (see below), then writeClientSite(color, slug, html, commitMessage). Preserve the template's structure, styling, and script tags. Only change copy/dates and add/remove sections the user asked for. DO NOT add or remove form fields — use whatever is already in the template.
 - For EDITS: call readClientSite(color, slug), apply the requested diff, then writeClientSite. Do not rewrite unrelated sections. If the template color is unknown, try readClientSite on each template until one succeeds.
-- After writing, call ensureVercelProject(color, slug). Take the returned projectId + name and call triggerDeploy(projectId, name, commitSha).
-- Respond with a single short final message containing: the live URL, the slug, and a one-line changelog.
-- Keep commit messages concise (<72 chars), e.g. "como/sarah-tom: initial site" or "como/sarah-tom: update date to 22 Aug".`;
+
+RSVP wiring (NEW clients only — skip for edits unless explicitly asked):
+1. Call ensureRsvpSheet(color, slug) — returns {sheetId, sheetUrl}.
+2. In the HTML, find the existing <form> element (if any). Modify it IN PLACE:
+   - Set method="POST" and action="${config.publicUrl}/rsvp".
+   - Add attribute enctype="application/x-www-form-urlencoded" if not present.
+   - Inside the form, insert <input type="hidden" name="sheetId" value="<sheetId>"> and <input type="hidden" name="slug" value="<slug>">.
+   - Ensure existing inputs have sensible name attributes. Common names: name, attending, guests, dietary, message. If inputs have different names, keep them (they'll still be captured in the Raw column).
+   - After the form, optionally add: <p id="rsvp-thanks" style="display:none">Thanks — your RSVP was recorded.</p>
+   - Just before </form> or </body>, add a tiny submit handler that posts via fetch and shows the thanks message without navigating away:
+     <script>
+     document.querySelector('form').addEventListener('submit', async (e) => {
+       e.preventDefault();
+       const fd = new FormData(e.target);
+       await fetch(e.target.action, { method: 'POST', body: new URLSearchParams(fd) });
+       e.target.style.display = 'none';
+       const t = document.getElementById('rsvp-thanks'); if (t) t.style.display = 'block';
+     });
+     </script>
+3. If the template has NO form, skip RSVP wiring silently.
+
+After writing: call ensureVercelProject(color, slug), then triggerDeploy(projectId, name, commitSha).
+
+Final reply: one short message with the live URL, the slug, the RSVP sheet URL (if created), and a one-line changelog.
+Commit messages: concise (<72 chars), e.g. "como/sarah-tom: initial site" or "como/sarah-tom: update date to 22 Aug".`;
 
 const TOOLS: Anthropic.Tool[] = [
   {
@@ -61,6 +84,15 @@ const TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "ensureRsvpSheet",
+    description: "Create (or find) the Google Sheet for this client's RSVP responses. Returns {sheetId, sheetUrl, name}. The sheet is publicly viewable; anyone with the URL can read it.",
+    input_schema: {
+      type: "object",
+      properties: { color: { type: "string" }, slug: { type: "string" } },
+      required: ["color", "slug"],
+    },
+  },
+  {
     name: "triggerDeploy",
     description: "Trigger a production deployment and wait until READY. Returns {deploymentUrl, state}.",
     input_schema: {
@@ -88,6 +120,8 @@ async function dispatchTool(name: string, input: any): Promise<string> {
         );
       case "ensureVercelProject":
         return JSON.stringify(await ensureVercelProject(input.color, input.slug));
+      case "ensureRsvpSheet":
+        return JSON.stringify(await ensureRsvpSheet(input.color, input.slug));
       case "triggerDeploy":
         return JSON.stringify(await triggerDeploy(input.projectId, input.name, input.commitSha));
       default:

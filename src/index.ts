@@ -1,8 +1,10 @@
 import { Bot } from "grammy";
+import express from "express";
 import { config, TEMPLATES } from "./config.js";
 import { classifyIntent, slugify } from "./intent.js";
 import { runAgent } from "./agent.js";
 import { listClients, readClientSite } from "./tools/github.js";
+import { appendRsvpRow } from "./tools/google.js";
 
 const bot = new Bot(config.telegramBotToken);
 
@@ -89,6 +91,33 @@ bot.on("message", async (ctx) => {
 
 bot.catch((err) => {
   console.error("[bot.catch]", err);
+});
+
+const app = express();
+app.use(express.urlencoded({ extended: true, limit: "64kb" }));
+app.use(express.json({ limit: "64kb" }));
+
+app.get("/", (_req, res) => res.status(200).send("lttd-bot ok"));
+
+app.post("/rsvp", async (req, res) => {
+  const body = req.body ?? {};
+  const sheetId = typeof body.sheetId === "string" ? body.sheetId : "";
+  if (!sheetId) {
+    res.status(400).json({ error: "missing sheetId" });
+    return;
+  }
+  try {
+    await appendRsvpRow(sheetId, body);
+    console.log(`[rsvp] slug=${body.slug ?? "?"} sheetId=${sheetId.slice(0, 8)}...`);
+    res.status(200).json({ ok: true });
+  } catch (err: any) {
+    console.error("[rsvp-error]", err);
+    res.status(500).json({ error: err?.message ?? String(err) });
+  }
+});
+
+app.listen(config.port, () => {
+  console.log(`[boot] http server on :${config.port} (public=${config.publicUrl})`);
 });
 
 console.log(
