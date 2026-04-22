@@ -1,0 +1,28 @@
+{
+  "name": "lttd-bot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "LinkToTheDay Telegram bot — drives automated wedding-site edits via Claude Agent SDK, GitHub, and Vercel.",
+  "main": "dist/index.js",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.1.0",
+    "@anthropic-ai/sdk": "^0.40.0",
+    "@octokit/rest": "^21.0.0",
+    "dotenv": "^16.4.5",
+    "grammy": "^1.30.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.0"
+  }
+}
