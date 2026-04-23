@@ -139,9 +139,11 @@ export async function runAgent(userPrompt: string): Promise<string> {
 
   for (let turn = 0; turn < 20; turn++) {
     const res = await anthropic.messages.create({
-      model: "claude-opus-4-7",
-      max_tokens: 32000,
-      system: SYSTEM_PROMPT,
+      model: "claude-sonnet-4-6",
+      max_tokens: 16000,
+      system: [
+        { type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
+      ],
       tools: TOOLS,
       messages,
     });
@@ -169,10 +171,17 @@ export async function runAgent(userPrompt: string): Promise<string> {
     for (const use of toolUses) {
       console.log(`[tool] ${use.name} input=${JSON.stringify(use.input).slice(0, 200)}`);
       const output = await dispatchTool(use.name, use.input);
+      const isLargeRead = use.name === "readTemplate" || use.name === "readClientSite";
       toolResults.push({
         type: "tool_result",
         tool_use_id: use.id,
-        content: output.slice(0, 100_000),
+        content: [
+          {
+            type: "text",
+            text: output.slice(0, 100_000),
+            ...(isLargeRead ? { cache_control: { type: "ephemeral" } } : {}),
+          },
+        ] as any,
       });
     }
 
