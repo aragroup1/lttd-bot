@@ -38,43 +38,54 @@ export async function ensureVercelProject(
 ): Promise<{ projectId: string; name: string; productionUrl: string }> {
   const name = projectName(color, slug);
 
+  const rootDirectory = `${color}/${slug}`;
+
+  let project: any;
   try {
-    const existing = await vercelFetch(`/v9/projects/${encodeURIComponent(name)}`);
-    return {
-      projectId: existing.id,
-      name,
-      productionUrl: `https://${name}.vercel.app`,
-    };
+    project = await vercelFetch(`/v9/projects/${encodeURIComponent(name)}`);
   } catch (err: any) {
     if (!String(err.message).includes("404")) throw err;
   }
 
-  let created: any;
-  try {
-    created = await vercelFetch(`/v10/projects`, {
-      method: "POST",
-      body: JSON.stringify({
-        name,
-        framework: null,
-        rootDirectory: `${color}/${slug}`,
-        gitRepository: {
-          type: "github",
-          repo: `${githubOwner}/${githubRepoName}`,
-        },
-      }),
-    });
-  } catch (err: any) {
-    const msg = String(err?.message ?? "");
-    if (/reserved|forbidden|name_already_exists|already_exists|conflict|taken/i.test(msg)) {
-      throw new Error(
-        `SLUG_TAKEN: Vercel project name "${name}" is unavailable. Ask the user to resend the same message with an added line:  Slug: <alternative-slug>  (e.g. Slug: ${name}-wedding)`
-      );
+  if (!project) {
+    try {
+      project = await vercelFetch(`/v10/projects`, {
+        method: "POST",
+        body: JSON.stringify({
+          name,
+          framework: null,
+          rootDirectory,
+          gitRepository: {
+            type: "github",
+            repo: `${githubOwner}/${githubRepoName}`,
+          },
+        }),
+      });
+    } catch (err: any) {
+      const msg = String(err?.message ?? "");
+      if (/reserved|forbidden|name_already_exists|already_exists|conflict|taken/i.test(msg)) {
+        throw new Error(
+          `SLUG_TAKEN: Vercel project name "${name}" is unavailable. Ask the user to resend the same message with an added line:  Slug: <alternative-slug>  (e.g. Slug: ${name}-wedding)`
+        );
+      }
+      throw err;
     }
-    throw err;
+  }
+
+  if (project.rootDirectory !== rootDirectory) {
+    try {
+      await vercelFetch(`/v9/projects/${encodeURIComponent(name)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ rootDirectory }),
+      });
+      console.log(`[vercel] patched rootDirectory for ${name} -> ${rootDirectory}`);
+    } catch (err: any) {
+      console.warn(`[vercel] rootDirectory PATCH failed for ${name}: ${err?.message}`);
+    }
   }
 
   return {
-    projectId: created.id,
+    projectId: project.id,
     name,
     productionUrl: `https://${name}.vercel.app`,
   };
