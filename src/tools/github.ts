@@ -3,13 +3,23 @@ import { config, githubOwner, githubRepoName } from "../config.js";
 
 const octokit = new Octokit({ auth: config.githubToken });
 
+let cachedBranch: string | null = null;
+async function defaultBranch(): Promise<string> {
+  if (cachedBranch) return cachedBranch;
+  const res = await octokit.repos.get({ owner: githubOwner, repo: githubRepoName });
+  cachedBranch = res.data.default_branch;
+  console.log(`[github] default branch for ${githubOwner}/${githubRepoName} = ${cachedBranch}`);
+  return cachedBranch;
+}
+
 async function getFile(path: string): Promise<{ content: string; sha: string } | null> {
   try {
+    const ref = await defaultBranch();
     const res = await octokit.repos.getContent({
       owner: githubOwner,
       repo: githubRepoName,
       path,
-      ref: "main",
+      ref,
     });
     const data = res.data as { type: string; content?: string; encoding?: string; sha: string };
     if (Array.isArray(res.data) || data.type !== "file" || !data.content) return null;
@@ -41,6 +51,7 @@ export async function writeClientSite(
 ): Promise<{ commitSha: string; path: string }> {
   const path = `${color}/${slug}/index.html`;
   const existing = await getFile(path);
+  const branch = await defaultBranch();
 
   const res = await octokit.repos.createOrUpdateFileContents({
     owner: githubOwner,
@@ -48,7 +59,7 @@ export async function writeClientSite(
     path,
     message: commitMessage,
     content: Buffer.from(html, "utf8").toString("base64"),
-    branch: "main",
+    branch,
     sha: existing?.sha,
   });
 
@@ -57,6 +68,7 @@ export async function writeClientSite(
 
 export async function listClients(): Promise<{ color: string; slug: string }[]> {
   const templates = ["como", "orange", "pink", "purple", "red", "white"];
+  const ref = await defaultBranch();
   const results: { color: string; slug: string }[] = [];
   for (const color of templates) {
     try {
@@ -64,7 +76,7 @@ export async function listClients(): Promise<{ color: string; slug: string }[]> 
         owner: githubOwner,
         repo: githubRepoName,
         path: color,
-        ref: "main",
+        ref,
       });
       if (!Array.isArray(res.data)) continue;
       for (const entry of res.data) {

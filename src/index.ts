@@ -46,7 +46,7 @@ bot.on("message", async (ctx) => {
       }
       const html = await readClientSite(match.color, match.slug);
       await ctx.reply(
-        `${match.color}/${match.slug} — https://lttd-${match.color}-${match.slug}.vercel.app\n\n(HTML length: ${html.length} chars)`
+        `${match.color}/${match.slug} — https://${match.slug}.vercel.app\n\n(HTML length: ${html.length} chars)`
       );
       return;
     }

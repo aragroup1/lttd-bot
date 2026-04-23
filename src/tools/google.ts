@@ -35,36 +35,23 @@ export async function ensureRsvpSheet(
   let sheetId = await findSheetByName(name);
 
   if (!sheetId) {
-    const created = await sheets.spreadsheets.create({
+    const created = await drive.files.create({
       requestBody: {
-        properties: { title: name },
-        sheets: [
-          {
-            properties: { title: "Responses" },
-            data: [
-              {
-                startRow: 0,
-                startColumn: 0,
-                rowData: [
-                  {
-                    values: [
-                      { userEnteredValue: { stringValue: "Timestamp" } },
-                      { userEnteredValue: { stringValue: "Name" } },
-                      { userEnteredValue: { stringValue: "Attending" } },
-                      { userEnteredValue: { stringValue: "Guests" } },
-                      { userEnteredValue: { stringValue: "Dietary" } },
-                      { userEnteredValue: { stringValue: "Message" } },
-                      { userEnteredValue: { stringValue: "Raw" } },
-                    ],
-                  },
-                ],
-              },
-            ],
-          },
-        ],
+        name,
+        mimeType: "application/vnd.google-apps.spreadsheet",
+      },
+      fields: "id",
+    });
+    sheetId = created.data.id!;
+
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: sheetId,
+      range: "A1:G1",
+      valueInputOption: "RAW",
+      requestBody: {
+        values: [["Timestamp", "Name", "Attending", "Guests", "Dietary", "Message", "Raw"]],
       },
     });
-    sheetId = created.data.spreadsheetId!;
 
     await drive.permissions.create({
       fileId: sheetId,

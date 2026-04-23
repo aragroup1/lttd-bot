@@ -28,8 +28,8 @@ async function vercelFetch(path: string, init: RequestInit = {}): Promise<any> {
   return body;
 }
 
-function projectName(color: string, slug: string): string {
-  return `lttd-${color}-${slug}`.toLowerCase().slice(0, 100);
+function projectName(_color: string, slug: string): string {
+  return slug.toLowerCase().slice(0, 100);
 }
 
 export async function ensureVercelProject(
