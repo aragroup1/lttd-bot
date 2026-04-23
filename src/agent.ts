@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { config, TEMPLATES } from "./config.js";
-import { readTemplate, readClientSite, writeClientSite } from "./tools/github.js";
+import { readTemplate, readClientSite, createFromTemplate, editClientSite } from "./tools/github.js";
 import { ensureVercelProject, triggerDeploy } from "./tools/vercel.js";
 import { ensureRsvpSheet } from "./tools/google.js";
 
@@ -15,28 +15,23 @@ Folder convention: <template>/<slug>/index.html. Slugs are lowercase, hyphenated
 Do NOT ask the user to confirm the slug. Proceed using the suggested/required slug directly. The only time to stop and reply with a question is when a tool returns SLUG_TAKEN — in that case, reply with the exact instruction from the tool error (telling the user to resend with a "Slug: <alternative>" line).
 
 Rules:
-- For NEW clients: call readTemplate(color), apply the user's details (names, date, venue, section add/remove), then wire up RSVP (see below), then writeClientSite(color, slug, html, commitMessage). Preserve the template's structure, styling, and script tags. Only change copy/dates and add/remove sections the user asked for. DO NOT add or remove form fields — use whatever is already in the template.
-- For EDITS: call readClientSite(color, slug), apply the requested diff, then writeClientSite. Do not rewrite unrelated sections. If the template color is unknown, try readClientSite on each template until one succeeds.
+- For NEW clients: (1) call readTemplate(color) to see the template. (2) call ensureRsvpSheet(color, slug) to get sheetId. (3) call createFromTemplate(color, slug, edits, commitMessage) with an array of small {find, replace} edits that substitute names/dates/venue AND wire up RSVP (see below). Preserve template structure, styling, and scripts — only touch what the user asked for. DO NOT add or remove form fields.
+- For EDITS: (1) call readClientSite(color, slug). (2) call editClientSite(color, slug, edits, commitMessage). Do not rewrite unrelated sections. If the template color is unknown, try readClientSite on each template until one succeeds.
+
+Edit rules (important):
+- Each {find, replace} must contain enough surrounding context that 'find' matches EXACTLY ONCE in the source. If 'find' isn't unique, include more context (parent tag, adjacent text).
+- 'find' must match byte-for-byte (whitespace, case). Copy verbatim from the readTemplate/readClientSite output.
+- Prefer many small edits over one big edit.
 
 RSVP wiring (NEW clients only — skip for edits unless explicitly asked):
-1. Call ensureRsvpSheet(color, slug) — returns {sheetId, sheetUrl}.
-2. In the HTML, find the existing <form> element (if any). Modify it IN PLACE:
-   - Set method="POST" and action="${config.publicUrl}/rsvp".
-   - Add attribute enctype="application/x-www-form-urlencoded" if not present.
-   - Inside the form, insert <input type="hidden" name="sheetId" value="<sheetId>"> and <input type="hidden" name="slug" value="<slug>">.
-   - Ensure existing inputs have sensible name attributes. Common names: name, attending, guests, dietary, message. If inputs have different names, keep them (they'll still be captured in the Raw column).
-   - After the form, optionally add: <p id="rsvp-thanks" style="display:none">Thanks — your RSVP was recorded.</p>
-   - Just before </form> or </body>, add a tiny submit handler that posts via fetch and shows the thanks message without navigating away:
-     <script>
-     document.querySelector('form').addEventListener('submit', async (e) => {
-       e.preventDefault();
-       const fd = new FormData(e.target);
-       await fetch(e.target.action, { method: 'POST', body: new URLSearchParams(fd) });
-       e.target.style.display = 'none';
-       const t = document.getElementById('rsvp-thanks'); if (t) t.style.display = 'block';
-     });
-     </script>
-3. If the template has NO form, skip RSVP wiring silently.
+- Use edits inside createFromTemplate to patch the existing <form>:
+  - Change its opening tag to: <form method="POST" action="${config.publicUrl}/rsvp">
+  - Insert two hidden inputs immediately after the opening <form ...> tag:
+      <input type="hidden" name="sheetId" value="<sheetId-from-ensureRsvpSheet>">
+      <input type="hidden" name="slug" value="<slug>">
+  - Just before </form>, append this script so the page doesn't navigate away:
+      <script>document.querySelector('form').addEventListener('submit',async(e)=>{e.preventDefault();const f=new FormData(e.target);await fetch(e.target.action,{method:'POST',body:new URLSearchParams(f)});e.target.innerHTML='<p>Thanks — your RSVP was recorded.</p>';});</script>
+- If the template has NO <form>, skip RSVP wiring silently.
 
 After writing: call ensureVercelProject(color, slug), then triggerDeploy(projectId, name, commitSha).
 
@@ -63,17 +58,53 @@ const TOOLS: Anthropic.Tool[] = [
     },
   },
   {
-    name: "writeClientSite",
-    description: "Create or update <color>/<slug>/index.html on main. Returns {commitSha, path}.",
+    name: "createFromTemplate",
+    description:
+      "Create a new client site at <color>/<slug>/index.html by reading the base template and applying small {find, replace} edits. Each 'find' must match EXACTLY ONCE in the template source — include enough surrounding context to make it unique. Returns {commitSha, path, editsApplied}.",
     input_schema: {
       type: "object",
       properties: {
         color: { type: "string" },
         slug: { type: "string" },
-        html: { type: "string" },
+        edits: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              find: { type: "string" },
+              replace: { type: "string" },
+            },
+            required: ["find", "replace"],
+          },
+        },
         commitMessage: { type: "string" },
       },
-      required: ["color", "slug", "html", "commitMessage"],
+      required: ["color", "slug", "edits", "commitMessage"],
+    },
+  },
+  {
+    name: "editClientSite",
+    description:
+      "Edit an existing client site at <color>/<slug>/index.html by applying {find, replace} edits. Same uniqueness rules as createFromTemplate. Returns {commitSha, path, editsApplied}.",
+    input_schema: {
+      type: "object",
+      properties: {
+        color: { type: "string" },
+        slug: { type: "string" },
+        edits: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              find: { type: "string" },
+              replace: { type: "string" },
+            },
+            required: ["find", "replace"],
+          },
+        },
+        commitMessage: { type: "string" },
+      },
+      required: ["color", "slug", "edits", "commitMessage"],
     },
   },
   {
@@ -116,9 +147,13 @@ async function dispatchTool(name: string, input: any): Promise<string> {
         return await readTemplate(input.color);
       case "readClientSite":
         return await readClientSite(input.color, input.slug);
-      case "writeClientSite":
+      case "createFromTemplate":
         return JSON.stringify(
-          await writeClientSite(input.color, input.slug, input.html, input.commitMessage)
+          await createFromTemplate(input.color, input.slug, input.edits, input.commitMessage)
+        );
+      case "editClientSite":
+        return JSON.stringify(
+          await editClientSite(input.color, input.slug, input.edits, input.commitMessage)
         );
       case "ensureVercelProject":
         return JSON.stringify(await ensureVercelProject(input.color, input.slug));

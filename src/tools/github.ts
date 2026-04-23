@@ -43,16 +43,37 @@ export async function readClientSite(color: string, slug: string): Promise<strin
   return file.content;
 }
 
-export async function writeClientSite(
-  color: string,
-  slug: string,
+export type Edit = { find: string; replace: string };
+
+function applyEdits(source: string, edits: Edit[]): { html: string; applied: number } {
+  let html = source;
+  let applied = 0;
+  for (const [i, edit] of edits.entries()) {
+    if (!edit.find) throw new Error(`Edit ${i}: 'find' is empty`);
+    const idx = html.indexOf(edit.find);
+    if (idx === -1) {
+      throw new Error(
+        `Edit ${i}: 'find' string not found in source (first 80 chars: ${edit.find.slice(0, 80)})`
+      );
+    }
+    if (html.indexOf(edit.find, idx + 1) !== -1) {
+      throw new Error(
+        `Edit ${i}: 'find' string matches multiple times — add more surrounding context to make it unique`
+      );
+    }
+    html = html.slice(0, idx) + edit.replace + html.slice(idx + edit.find.length);
+    applied++;
+  }
+  return { html, applied };
+}
+
+async function writeFile(
+  path: string,
   html: string,
   commitMessage: string
 ): Promise<{ commitSha: string; path: string }> {
-  const path = `${color}/${slug}/index.html`;
   const existing = await getFile(path);
   const branch = await defaultBranch();
-
   const res = await octokit.repos.createOrUpdateFileContents({
     owner: githubOwner,
     repo: githubRepoName,
@@ -62,8 +83,33 @@ export async function writeClientSite(
     branch,
     sha: existing?.sha,
   });
-
   return { commitSha: res.data.commit.sha ?? "", path };
+}
+
+export async function createFromTemplate(
+  color: string,
+  slug: string,
+  edits: Edit[],
+  commitMessage: string
+): Promise<{ commitSha: string; path: string; editsApplied: number }> {
+  const template = await readTemplate(color);
+  const { html, applied } = applyEdits(template, edits);
+  const path = `${color}/${slug}/index.html`;
+  const res = await writeFile(path, html, commitMessage);
+  return { ...res, editsApplied: applied };
+}
+
+export async function editClientSite(
+  color: string,
+  slug: string,
+  edits: Edit[],
+  commitMessage: string
+): Promise<{ commitSha: string; path: string; editsApplied: number }> {
+  const current = await readClientSite(color, slug);
+  const { html, applied } = applyEdits(current, edits);
+  const path = `${color}/${slug}/index.html`;
+  const res = await writeFile(path, html, commitMessage);
+  return { ...res, editsApplied: applied };
 }
 
 export async function listClients(): Promise<{ color: string; slug: string }[]> {
