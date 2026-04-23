@@ -49,18 +49,29 @@ export async function ensureVercelProject(
     if (!String(err.message).includes("404")) throw err;
   }
 
-  const created = await vercelFetch(`/v10/projects`, {
-    method: "POST",
-    body: JSON.stringify({
-      name,
-      framework: null,
-      rootDirectory: `${color}/${slug}`,
-      gitRepository: {
-        type: "github",
-        repo: `${githubOwner}/${githubRepoName}`,
-      },
-    }),
-  });
+  let created: any;
+  try {
+    created = await vercelFetch(`/v10/projects`, {
+      method: "POST",
+      body: JSON.stringify({
+        name,
+        framework: null,
+        rootDirectory: `${color}/${slug}`,
+        gitRepository: {
+          type: "github",
+          repo: `${githubOwner}/${githubRepoName}`,
+        },
+      }),
+    });
+  } catch (err: any) {
+    const msg = String(err?.message ?? "");
+    if (/reserved|forbidden|name_already_exists|already_exists|conflict|taken/i.test(msg)) {
+      throw new Error(
+        `SLUG_TAKEN: Vercel project name "${name}" is unavailable. Ask the user to resend the same message with an added line:  Slug: <alternative-slug>  (e.g. Slug: ${name}-wedding)`
+      );
+    }
+    throw err;
+  }
 
   return {
     projectId: created.id,

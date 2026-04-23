@@ -67,11 +67,17 @@ bot.on("message", async (ctx) => {
 
     let agentPrompt: string;
     if (intent.kind === "new") {
-      const suggestedSlug = slugify(intent.rawDetails.match(/couple[:\s]+([^\n]+)/i)?.[1] ?? "");
+      const slugOverride = intent.rawDetails.match(/^slug:\s*([a-z0-9-]+)\s*$/im)?.[1];
+      const suggestedSlug =
+        slugOverride ?? slugify(intent.rawDetails.match(/couple[:\s]+([^\n]+)/i)?.[1] ?? "");
       agentPrompt =
         `Intent: NEW client.\n` +
         `Template: ${intent.template}\n` +
-        (suggestedSlug ? `Suggested slug: ${suggestedSlug}\n` : "") +
+        (slugOverride
+          ? `Required slug (user-specified override, use exactly this): ${slugOverride}\n`
+          : suggestedSlug
+          ? `Suggested slug: ${suggestedSlug}\n`
+          : "") +
         `\nClient details:\n${intent.rawDetails}`;
     } else {
       agentPrompt =
