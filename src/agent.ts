@@ -140,7 +140,7 @@ export async function runAgent(userPrompt: string): Promise<string> {
   for (let turn = 0; turn < 20; turn++) {
     const res = await anthropic.messages.create({
       model: "claude-opus-4-7",
-      max_tokens: 8192,
+      max_tokens: 32000,
       system: SYSTEM_PROMPT,
       tools: TOOLS,
       messages,
