@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { config, TEMPLATES } from "./config.js";
 import { readTemplate, readClientSite, createFromTemplate, editClientSite } from "./tools/github.js";
-import { ensureVercelProject, deploySite } from "./tools/vercel.js";
+import { ensureVercelProject, deploySite, attachDomain } from "./tools/vercel.js";
 import { ensureRsvpSheet } from "./tools/google.js";
 
 const anthropic = new Anthropic({ apiKey: config.anthropicApiKey });
@@ -15,8 +15,15 @@ Folder convention: <template>/<slug>/index.html. Slugs are lowercase, hyphenated
 Do NOT ask the user to confirm the slug. Proceed using the suggested/required slug directly. The only time to stop and reply with a question is when a tool returns SLUG_TAKEN — in that case, reply with the exact instruction from the tool error (telling the user to resend with a "Slug: <alternative>" line).
 
 Rules:
-- For NEW clients: (1) call readTemplate(color) to see the template. (2) call ensureRsvpSheet(color, slug) to get sheetId. (3) call createFromTemplate(color, slug, edits, commitMessage) with an array of small {find, replace} edits that substitute names/dates/venue AND wire up RSVP (see below). Preserve template structure, styling, and scripts — only touch what the user asked for. DO NOT add or remove form fields.
-- For EDITS: (1) call readClientSite(color, slug). (2) call editClientSite(color, slug, edits, commitMessage). Do not rewrite unrelated sections. If the template color is unknown, try readClientSite on each template until one succeeds.
+- For NEW clients, call tools in this order:
+  1. ensureVercelProject(color, suggested_slug) — the returned 'slug' may be auto-suffixed if the original was taken (e.g. "arman-faiza" -> "arman-faiza-2"). USE THIS RETURNED SLUG for every subsequent call. If the response is SLUG_TAKEN, stop and reply with the instruction.
+  2. ensureRsvpSheet(color, finalSlug) — returns {sheetId, sheetUrl, sig}.
+  3. readTemplate(color) — see the template HTML.
+  4. createFromTemplate(color, finalSlug, edits, commitMessage) — small {find, replace} edits that substitute names/dates/venue AND wire up RSVP (see below).
+  5. deploySite(color, finalSlug) — direct upload (no Git link).
+- For EDITS: (1) readClientSite(color, slug). (2) editClientSite(color, slug, edits, commitMessage). (3) deploySite(color, slug). Do not rewrite unrelated sections. If the template color is unknown, try readClientSite on each template until one succeeds.
+
+Preserve template structure, styling, scripts. Only change copy/dates and add/remove sections the user asked for. DO NOT add or remove form fields — keep the template's inputs as-is.
 
 Edit rules (important):
 - Each {find, replace} must contain enough surrounding context that 'find' matches EXACTLY ONCE in the source. If 'find' isn't unique, include more context (parent tag, adjacent text).
@@ -26,16 +33,15 @@ Edit rules (important):
 RSVP wiring (NEW clients only — skip for edits unless explicitly asked):
 - Use edits inside createFromTemplate to patch the existing <form>:
   - Change its opening tag to: <form method="POST" action="${config.publicUrl}/rsvp">
-  - Insert two hidden inputs immediately after the opening <form ...> tag:
+  - Insert three hidden inputs immediately after the opening <form ...> tag:
       <input type="hidden" name="sheetId" value="<sheetId-from-ensureRsvpSheet>">
       <input type="hidden" name="slug" value="<slug>">
+      <input type="hidden" name="sig" value="<sig-from-ensureRsvpSheet>">
   - Just before </form>, append this script so the page doesn't navigate away:
       <script>document.querySelector('form').addEventListener('submit',async(e)=>{e.preventDefault();const f=new FormData(e.target);await fetch(e.target.action,{method:'POST',body:new URLSearchParams(f)});e.target.innerHTML='<p>Thanks — your RSVP was recorded.</p>';});</script>
 - If the template has NO <form>, skip RSVP wiring silently.
 
-After writing: call ensureVercelProject(color, slug), then deploySite(color, slug). The deploy is a direct file upload (not Git-linked), so no commit-sha tracking is needed.
-
-Final reply: one short message with the live URL, the slug, the RSVP sheet URL (if created), and a one-line changelog.
+Final reply: one short message with the live URL (https://<finalSlug>.vercel.app), the final slug, the RSVP sheet URL (if created), and a one-line changelog.
 Commit messages: concise (<72 chars), e.g. "como/sarah-tom: initial site" or "como/sarah-tom: update date to 22 Aug".`;
 
 const TOOLS: Anthropic.Tool[] = [
@@ -118,11 +124,20 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "ensureRsvpSheet",
-    description: "Create (or find) the Google Sheet for this client's RSVP responses. Returns {sheetId, sheetUrl, name}. The sheet is publicly viewable; anyone with the URL can read it.",
+    description: "Create (or find) the Google Sheet for this client's RSVP responses. Returns {sheetId, sheetUrl, name, sig}. 'sig' must be embedded as a hidden form input named 'sig' so the /rsvp endpoint can verify the post.",
     input_schema: {
       type: "object",
       properties: { color: { type: "string" }, slug: { type: "string" } },
       required: ["color", "slug"],
+    },
+  },
+  {
+    name: "attachDomain",
+    description: "Attach a custom domain (e.g. armanandfaiza.com) to a client's Vercel project. Returns DNS records the user must set. Only call this when the user explicitly issues a 'Domain' command.",
+    input_schema: {
+      type: "object",
+      properties: { slug: { type: "string" }, domain: { type: "string" } },
+      required: ["slug", "domain"],
     },
   },
   {
@@ -158,6 +173,8 @@ async function dispatchTool(name: string, input: any): Promise<string> {
         return JSON.stringify(await ensureRsvpSheet(input.color, input.slug));
       case "deploySite":
         return JSON.stringify(await deploySite(input.color, input.slug));
+      case "attachDomain":
+        return JSON.stringify(await attachDomain(input.slug, input.domain));
       default:
         return JSON.stringify({ error: `Unknown tool: ${name}` });
     }

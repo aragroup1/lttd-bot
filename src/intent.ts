@@ -8,6 +8,9 @@ export type Intent =
   | { kind: "edit"; slug: string; rawDetails: string }
   | { kind: "list" }
   | { kind: "show"; slug: string }
+  | { kind: "delete"; slug: string }
+  | { kind: "domain"; slug: string; domain: string }
+  | { kind: "help" }
   | { kind: "unknown"; reason: string };
 
 function parseFirstLineFast(message: string): Intent | null {
@@ -15,10 +18,18 @@ function parseFirstLineFast(message: string): Intent | null {
   const firstLine = trimmed.split(/\r?\n/)[0]?.trim() ?? "";
   const rest = trimmed.slice(firstLine.length).trim();
 
+  if (/^(help|\/help|\?)$/i.test(firstLine)) return { kind: "help" };
+
   if (/^list my clients$/i.test(firstLine)) return { kind: "list" };
 
   const show = firstLine.match(/^show\s+([a-z0-9-]+)$/i);
   if (show) return { kind: "show", slug: show[1].toLowerCase() };
+
+  const del = firstLine.match(/^delete\s+([a-z0-9-]+)\s*!?\s*$/i);
+  if (del) return { kind: "delete", slug: del[1].toLowerCase() };
+
+  const dom = firstLine.match(/^domain\s+([a-z0-9-]+)\s+([a-z0-9.-]+\.[a-z]{2,})\s*$/i);
+  if (dom) return { kind: "domain", slug: dom[1].toLowerCase(), domain: dom[2].toLowerCase() };
 
   const nw = firstLine.match(/^new client[, ]+(?:template\s+)?([a-z]+)\b/i);
   if (nw) {

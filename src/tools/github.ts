@@ -112,6 +112,115 @@ export async function editClientSite(
   return { ...res, editsApplied: applied };
 }
 
+export type RepoFile = { path: string; data: Buffer };
+
+async function getFileBinary(path: string): Promise<RepoFile | null> {
+  try {
+    const ref = await defaultBranch();
+    const res = await octokit.repos.getContent({
+      owner: githubOwner,
+      repo: githubRepoName,
+      path,
+      ref,
+    });
+    if (Array.isArray(res.data)) return null;
+    const data = res.data as { type: string; content?: string; encoding?: string; size?: number };
+    if (data.type !== "file") return null;
+    if (data.content) {
+      return { path, data: Buffer.from(data.content, (data.encoding ?? "base64") as BufferEncoding) };
+    }
+    if ((data as any).download_url) {
+      const dl = await fetch((data as any).download_url);
+      return { path, data: Buffer.from(await dl.arrayBuffer()) };
+    }
+    return null;
+  } catch (err: any) {
+    if (err.status === 404) return null;
+    throw err;
+  }
+}
+
+async function listFolderRecursive(path: string): Promise<string[]> {
+  const ref = await defaultBranch();
+  const out: string[] = [];
+  let res;
+  try {
+    res = await octokit.repos.getContent({
+      owner: githubOwner,
+      repo: githubRepoName,
+      path,
+      ref,
+    });
+  } catch (err: any) {
+    if (err.status === 404) return [];
+    throw err;
+  }
+  if (!Array.isArray(res.data)) return [];
+  for (const entry of res.data) {
+    if (entry.type === "file") out.push(entry.path);
+    else if (entry.type === "dir") out.push(...(await listFolderRecursive(entry.path)));
+  }
+  return out;
+}
+
+export async function collectDeployFiles(
+  color: string,
+  slug: string
+): Promise<RepoFile[]> {
+  const clientPaths = await listFolderRecursive(`${color}/${slug}`);
+  const files: RepoFile[] = [];
+
+  for (const p of clientPaths) {
+    const f = await getFileBinary(p);
+    if (f) files.push({ path: p.slice(`${color}/${slug}/`.length), data: f.data });
+  }
+
+  const ref = await defaultBranch();
+  const tplRes = await octokit.repos.getContent({
+    owner: githubOwner,
+    repo: githubRepoName,
+    path: color,
+    ref,
+  });
+  if (Array.isArray(tplRes.data)) {
+    const haveAtRoot = new Set(files.filter((f) => !f.path.includes("/")).map((f) => f.path));
+    for (const entry of tplRes.data) {
+      if (entry.type !== "file") continue;
+      if (entry.name === "index.html") continue;
+      if (haveAtRoot.has(entry.name)) continue;
+      const f = await getFileBinary(entry.path);
+      if (f) files.push({ path: entry.name, data: f.data });
+    }
+  }
+
+  return files;
+}
+
+export async function deleteClientFolder(
+  color: string,
+  slug: string,
+  commitMessage: string
+): Promise<{ deleted: number }> {
+  const ref = await defaultBranch();
+  const branch = ref;
+  const paths = await listFolderRecursive(`${color}/${slug}`);
+  let deleted = 0;
+  for (const path of paths) {
+    const cur = await getFile(path);
+    if (!cur) continue;
+    await octokit.repos.deleteFile({
+      owner: githubOwner,
+      repo: githubRepoName,
+      path,
+      message: commitMessage,
+      branch,
+      sha: cur.sha,
+    });
+    deleted++;
+  }
+  return { deleted };
+}
+
 export async function listClients(): Promise<{ color: string; slug: string }[]> {
   const templates = ["como", "orange", "pink", "purple", "red", "white"];
   const ref = await defaultBranch();

@@ -1,5 +1,5 @@
 import { google } from "googleapis";
-import { config } from "../config.js";
+import { config, rsvpSign } from "../config.js";
 
 const credentials = JSON.parse(config.googleServiceAccountJson);
 
@@ -30,7 +30,7 @@ async function findSheetByName(name: string): Promise<string | null> {
 export async function ensureRsvpSheet(
   color: string,
   slug: string
-): Promise<{ sheetId: string; sheetUrl: string; name: string }> {
+): Promise<{ sheetId: string; sheetUrl: string; name: string; sig: string }> {
   const name = sheetName(color, slug);
   let sheetId = await findSheetByName(name);
 
@@ -63,6 +63,7 @@ export async function ensureRsvpSheet(
     sheetId,
     sheetUrl: `https://docs.google.com/spreadsheets/d/${sheetId}/edit`,
     name,
+    sig: rsvpSign(slug, sheetId),
   };
 }
 
@@ -81,8 +82,16 @@ export async function appendRsvpRow(
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
-    range: "Responses!A:G",
+    range: "A:G",
     valueInputOption: "RAW",
     requestBody: { values: [row] },
   });
+}
+
+export async function deleteRsvpSheet(color: string, slug: string): Promise<{ deleted: boolean }> {
+  const name = sheetName(color, slug);
+  const sheetId = await findSheetByName(name);
+  if (!sheetId) return { deleted: false };
+  await drive.files.delete({ fileId: sheetId });
+  return { deleted: true };
 }

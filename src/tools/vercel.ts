@@ -1,11 +1,13 @@
 import { config } from "../config.js";
-import { readClientSite } from "./github.js";
+import { collectDeployFiles } from "./github.js";
 
 const VERCEL_API = "https://api.vercel.com";
 
 function appendTeam(url: string): string {
   if (!config.vercelTeamId) return url;
-  return url.includes("?") ? `${url}&teamId=${encodeURIComponent(config.vercelTeamId)}` : `${url}?teamId=${encodeURIComponent(config.vercelTeamId)}`;
+  return url.includes("?")
+    ? `${url}&teamId=${encodeURIComponent(config.vercelTeamId)}`
+    : `${url}?teamId=${encodeURIComponent(config.vercelTeamId)}`;
 }
 
 async function vercelFetch(path: string, init: RequestInit = {}): Promise<any> {
@@ -25,64 +27,91 @@ async function vercelFetch(path: string, init: RequestInit = {}): Promise<any> {
   return body;
 }
 
-function projectName(_color: string, slug: string): string {
+function projectName(slug: string): string {
   return slug.toLowerCase().slice(0, 100);
+}
+
+async function tryGetProject(name: string): Promise<any | null> {
+  try {
+    return await vercelFetch(`/v9/projects/${encodeURIComponent(name)}`);
+  } catch (err: any) {
+    if (String(err.message).includes("404")) return null;
+    throw err;
+  }
 }
 
 export async function ensureVercelProject(
   _color: string,
   slug: string
-): Promise<{ projectId: string; name: string; productionUrl: string }> {
-  const name = projectName(_color, slug);
+): Promise<{ projectId: string; name: string; productionUrl: string; slug: string }> {
+  let candidate = projectName(slug);
+  const original = candidate;
 
-  let project: any;
-  try {
-    project = await vercelFetch(`/v9/projects/${encodeURIComponent(name)}`);
-  } catch (err: any) {
-    if (!String(err.message).includes("404")) throw err;
+  let existing = await tryGetProject(candidate);
+  if (existing) {
+    return {
+      projectId: existing.id,
+      name: candidate,
+      productionUrl: `https://${candidate}.vercel.app`,
+      slug: candidate,
+    };
   }
 
-  if (!project) {
+  for (let attempt = 0; attempt < 10; attempt++) {
     try {
-      project = await vercelFetch(`/v10/projects`, {
+      const created = await vercelFetch(`/v10/projects`, {
         method: "POST",
-        body: JSON.stringify({ name, framework: null }),
+        body: JSON.stringify({ name: candidate, framework: null }),
       });
+      return {
+        projectId: created.id,
+        name: candidate,
+        productionUrl: `https://${candidate}.vercel.app`,
+        slug: candidate,
+      };
     } catch (err: any) {
       const msg = String(err?.message ?? "");
       if (/reserved|forbidden|name_already_exists|already_exists|conflict|taken/i.test(msg)) {
-        throw new Error(
-          `SLUG_TAKEN: Vercel project name "${name}" is unavailable. Ask the user to resend the same message with an added line:  Slug: <alternative-slug>  (e.g. Slug: ${name}-wedding)`
-        );
+        candidate = `${original}-${attempt + 2}`;
+        const next = await tryGetProject(candidate);
+        if (next) {
+          return {
+            projectId: next.id,
+            name: candidate,
+            productionUrl: `https://${candidate}.vercel.app`,
+            slug: candidate,
+          };
+        }
+        continue;
       }
       throw err;
     }
   }
 
-  return {
-    projectId: project.id,
-    name,
-    productionUrl: `https://${name}.vercel.app`,
-  };
+  throw new Error(
+    `SLUG_TAKEN: Tried "${original}" through "${original}-10", all unavailable. Ask the user to resend with an added line:  Slug: <alternative-slug>`
+  );
 }
 
 export async function deploySite(
   color: string,
   slug: string
-): Promise<{ deploymentUrl: string; state: string; name: string }> {
-  const name = projectName(color, slug);
-  const html = await readClientSite(color, slug);
+): Promise<{ deploymentUrl: string; state: string; name: string; fileCount: number }> {
+  const name = projectName(slug);
+  const files = await collectDeployFiles(color, slug);
+  if (!files.find((f) => f.path === "index.html")) {
+    throw new Error(`No index.html found in ${color}/${slug}/ — site cannot be deployed.`);
+  }
+
   const body = {
     name,
     project: name,
     target: "production",
-    files: [
-      {
-        file: "index.html",
-        data: Buffer.from(html, "utf8").toString("base64"),
-        encoding: "base64",
-      },
-    ],
+    files: files.map((f) => ({
+      file: f.path,
+      data: f.data.toString("base64"),
+      encoding: "base64",
+    })),
     projectSettings: { framework: null },
   };
 
@@ -94,14 +123,62 @@ export async function deploySite(
   const id = deployment.id as string;
   const deadline = Date.now() + 5 * 60_000;
   let state: string = deployment.readyState ?? deployment.status ?? "QUEUED";
-  let url: string = deployment.url ? `https://${deployment.url}` : `https://${name}.vercel.app`;
 
   while (state !== "READY" && state !== "ERROR" && state !== "CANCELED" && Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 3000));
     const poll = await vercelFetch(`/v13/deployments/${id}`);
     state = poll.readyState ?? poll.status ?? state;
-    if (poll.url) url = `https://${poll.url}`;
   }
 
-  return { deploymentUrl: `https://${name}.vercel.app`, state, name };
+  return {
+    deploymentUrl: `https://${name}.vercel.app`,
+    state,
+    name,
+    fileCount: files.length,
+  };
+}
+
+export async function attachDomain(
+  slug: string,
+  domain: string
+): Promise<{ domain: string; verified: boolean; dnsHints: string[] }> {
+  const name = projectName(slug);
+  const project = await tryGetProject(name);
+  if (!project) throw new Error(`No Vercel project named "${name}".`);
+
+  let result: any;
+  try {
+    result = await vercelFetch(`/v10/projects/${encodeURIComponent(name)}/domains`, {
+      method: "POST",
+      body: JSON.stringify({ name: domain }),
+    });
+  } catch (err: any) {
+    if (/already_exists|domain_already_in_use/i.test(String(err.message))) {
+      result = { name: domain, verified: false };
+    } else {
+      throw err;
+    }
+  }
+
+  const dnsHints = domain.split(".").length === 2
+    ? [
+        `A @ 76.76.21.21`,
+        `CNAME www cname.vercel-dns.com`,
+      ]
+    : [
+        `CNAME ${domain.split(".").slice(0, -2).join(".")} cname.vercel-dns.com`,
+      ];
+
+  return { domain, verified: !!result.verified, dnsHints };
+}
+
+export async function deleteVercelProject(slug: string): Promise<{ deleted: boolean }> {
+  const name = projectName(slug);
+  try {
+    await vercelFetch(`/v9/projects/${encodeURIComponent(name)}`, { method: "DELETE" });
+    return { deleted: true };
+  } catch (err: any) {
+    if (String(err.message).includes("404")) return { deleted: false };
+    throw err;
+  }
 }
