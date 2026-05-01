@@ -183,8 +183,28 @@ async function dispatchTool(name: string, input: any): Promise<string> {
   }
 }
 
-export async function runAgent(userPrompt: string): Promise<string> {
+export type AgentResult = {
+  text: string;
+  facts: { liveUrl?: string; sheetUrl?: string; slug?: string; commitSha?: string };
+};
+
+const TOOL_LABELS: Record<string, string> = {
+  readTemplate: "Reading template",
+  readClientSite: "Reading current site",
+  ensureVercelProject: "Reserving Vercel project",
+  ensureRsvpSheet: "Setting up RSVP sheet",
+  createFromTemplate: "Writing site to GitHub",
+  editClientSite: "Applying edits to GitHub",
+  deploySite: "Deploying to Vercel",
+  attachDomain: "Attaching custom domain",
+};
+
+export async function runAgent(
+  userPrompt: string,
+  onProgress?: (label: string) => void
+): Promise<AgentResult> {
   const messages: Anthropic.MessageParam[] = [{ role: "user", content: userPrompt }];
+  const facts: AgentResult["facts"] = {};
 
   for (let turn = 0; turn < 20; turn++) {
     const res = await anthropic.messages.create({
@@ -205,11 +225,11 @@ export async function runAgent(userPrompt: string): Promise<string> {
         .map((b) => b.text)
         .join("\n")
         .trim();
-      return finalText || "(agent ended with no text)";
+      return { text: finalText || "(agent ended with no text)", facts };
     }
 
     if (res.stop_reason !== "tool_use") {
-      return `(agent stopped: ${res.stop_reason})`;
+      return { text: `(agent stopped: ${res.stop_reason})`, facts };
     }
 
     const toolUses = res.content.filter(
@@ -218,8 +238,24 @@ export async function runAgent(userPrompt: string): Promise<string> {
 
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
     for (const use of toolUses) {
+      const label = TOOL_LABELS[use.name] ?? use.name;
       console.log(`[tool] ${use.name} input=${JSON.stringify(use.input).slice(0, 200)}`);
+      onProgress?.(label);
       const output = await dispatchTool(use.name, use.input);
+
+      try {
+        const parsed = JSON.parse(output);
+        if (use.name === "ensureVercelProject" && parsed?.slug) facts.slug = parsed.slug;
+        if (use.name === "ensureVercelProject" && parsed?.productionUrl) facts.liveUrl = parsed.productionUrl;
+        if (use.name === "ensureRsvpSheet" && parsed?.sheetUrl) facts.sheetUrl = parsed.sheetUrl;
+        if (use.name === "deploySite" && parsed?.deploymentUrl) facts.liveUrl = parsed.deploymentUrl;
+        if ((use.name === "createFromTemplate" || use.name === "editClientSite") && parsed?.commitSha) {
+          facts.commitSha = parsed.commitSha;
+        }
+      } catch {
+        // raw text outputs (readTemplate/readClientSite) — ignore
+      }
+
       const isLargeRead = use.name === "readTemplate" || use.name === "readClientSite";
       toolResults.push({
         type: "tool_result",
@@ -237,5 +273,5 @@ export async function runAgent(userPrompt: string): Promise<string> {
     messages.push({ role: "user", content: toolResults });
   }
 
-  return "(agent exceeded turn limit)";
+  return { text: "(agent exceeded turn limit)", facts };
 }

@@ -121,9 +121,27 @@ bot.on("message", async (ctx) => {
         `Requested changes:\n${intent.rawDetails}`;
     }
 
-    await ctx.reply(header);
-    const reply = await runAgent(agentPrompt);
-    await ctx.reply(reply.slice(0, 4000));
+    const status = await ctx.reply(header);
+    const statusMsgId = status.message_id;
+    const chatId = ctx.chat.id;
+    const updates: string[] = [header];
+
+    const onProgress = (label: string) => {
+      updates.push(`• ${label}`);
+      ctx.api
+        .editMessageText(chatId, statusMsgId, updates.join("\n"))
+        .catch((e) => console.warn("[edit-status]", e?.message));
+    };
+
+    const result = await runAgent(agentPrompt, onProgress);
+
+    const lines: string[] = [];
+    if (result.facts.liveUrl) lines.push(`Live: ${result.facts.liveUrl}`);
+    if (result.facts.sheetUrl) lines.push(`RSVP sheet: ${result.facts.sheetUrl}`);
+    if (result.facts.slug) lines.push(`Slug: ${result.facts.slug}`);
+    if (result.text) lines.push("", result.text);
+
+    await ctx.reply(lines.join("\n").slice(0, 4000));
   } catch (err: any) {
     console.error("[error]", err);
     await ctx.reply(`Error: ${err?.message ?? String(err)}`.slice(0, 4000));
