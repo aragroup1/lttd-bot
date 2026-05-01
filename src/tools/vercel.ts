@@ -1,10 +1,7 @@
-import { config, githubOwner, githubRepoName } from "../config.js";
+import { config } from "../config.js";
+import { readClientSite } from "./github.js";
 
 const VERCEL_API = "https://api.vercel.com";
-
-function teamQuery(): string {
-  return config.vercelTeamId ? `?teamId=${encodeURIComponent(config.vercelTeamId)}` : "";
-}
 
 function appendTeam(url: string): string {
   if (!config.vercelTeamId) return url;
@@ -33,12 +30,10 @@ function projectName(_color: string, slug: string): string {
 }
 
 export async function ensureVercelProject(
-  color: string,
+  _color: string,
   slug: string
 ): Promise<{ projectId: string; name: string; productionUrl: string }> {
-  const name = projectName(color, slug);
-
-  const rootDirectory = `${color}/${slug}`;
+  const name = projectName(_color, slug);
 
   let project: any;
   try {
@@ -51,15 +46,7 @@ export async function ensureVercelProject(
     try {
       project = await vercelFetch(`/v10/projects`, {
         method: "POST",
-        body: JSON.stringify({
-          name,
-          framework: null,
-          rootDirectory,
-          gitRepository: {
-            type: "github",
-            repo: `${githubOwner}/${githubRepoName}`,
-          },
-        }),
+        body: JSON.stringify({ name, framework: null }),
       });
     } catch (err: any) {
       const msg = String(err?.message ?? "");
@@ -72,18 +59,6 @@ export async function ensureVercelProject(
     }
   }
 
-  if (project.rootDirectory !== rootDirectory) {
-    try {
-      await vercelFetch(`/v9/projects/${encodeURIComponent(name)}`, {
-        method: "PATCH",
-        body: JSON.stringify({ rootDirectory }),
-      });
-      console.log(`[vercel] patched rootDirectory for ${name} -> ${rootDirectory}`);
-    } catch (err: any) {
-      console.warn(`[vercel] rootDirectory PATCH failed for ${name}: ${err?.message}`);
-    }
-  }
-
   return {
     projectId: project.id,
     name,
@@ -91,24 +66,27 @@ export async function ensureVercelProject(
   };
 }
 
-export async function triggerDeploy(
-  projectId: string,
-  name: string,
-  commitSha?: string
-): Promise<{ deploymentUrl: string; state: string }> {
-  const body: Record<string, unknown> = {
+export async function deploySite(
+  color: string,
+  slug: string
+): Promise<{ deploymentUrl: string; state: string; name: string }> {
+  const name = projectName(color, slug);
+  const html = await readClientSite(color, slug);
+  const body = {
     name,
-    project: projectId,
+    project: name,
     target: "production",
-    gitSource: {
-      type: "github",
-      repoId: undefined,
-      ref: "main",
-      sha: commitSha,
-    },
+    files: [
+      {
+        file: "index.html",
+        data: Buffer.from(html, "utf8").toString("base64"),
+        encoding: "base64",
+      },
+    ],
+    projectSettings: { framework: null },
   };
 
-  const deployment = await vercelFetch(`/v13/deployments`, {
+  const deployment = await vercelFetch(`/v13/deployments?forceNew=1`, {
     method: "POST",
     body: JSON.stringify(body),
   });
@@ -119,11 +97,11 @@ export async function triggerDeploy(
   let url: string = deployment.url ? `https://${deployment.url}` : `https://${name}.vercel.app`;
 
   while (state !== "READY" && state !== "ERROR" && state !== "CANCELED" && Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, 4000));
+    await new Promise((r) => setTimeout(r, 3000));
     const poll = await vercelFetch(`/v13/deployments/${id}`);
     state = poll.readyState ?? poll.status ?? state;
     if (poll.url) url = `https://${poll.url}`;
   }
 
-  return { deploymentUrl: url, state };
+  return { deploymentUrl: `https://${name}.vercel.app`, state, name };
 }

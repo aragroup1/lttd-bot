@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { config, TEMPLATES } from "./config.js";
 import { readTemplate, readClientSite, createFromTemplate, editClientSite } from "./tools/github.js";
-import { ensureVercelProject, triggerDeploy } from "./tools/vercel.js";
+import { ensureVercelProject, deploySite } from "./tools/vercel.js";
 import { ensureRsvpSheet } from "./tools/google.js";
 
 const anthropic = new Anthropic({ apiKey: config.anthropicApiKey });
@@ -33,7 +33,7 @@ RSVP wiring (NEW clients only — skip for edits unless explicitly asked):
       <script>document.querySelector('form').addEventListener('submit',async(e)=>{e.preventDefault();const f=new FormData(e.target);await fetch(e.target.action,{method:'POST',body:new URLSearchParams(f)});e.target.innerHTML='<p>Thanks — your RSVP was recorded.</p>';});</script>
 - If the template has NO <form>, skip RSVP wiring silently.
 
-After writing: call ensureVercelProject(color, slug), then triggerDeploy(projectId, name, commitSha).
+After writing: call ensureVercelProject(color, slug), then deploySite(color, slug). The deploy is a direct file upload (not Git-linked), so no commit-sha tracking is needed.
 
 Final reply: one short message with the live URL, the slug, the RSVP sheet URL (if created), and a one-line changelog.
 Commit messages: concise (<72 chars), e.g. "como/sarah-tom: initial site" or "como/sarah-tom: update date to 22 Aug".`;
@@ -109,7 +109,7 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "ensureVercelProject",
-    description: "Idempotent: find or create the Vercel project lttd-<color>-<slug> pointing at <color>/<slug> in the repo. Returns {projectId, name, productionUrl}.",
+    description: "Idempotent: find or create a Vercel project named <slug> (no Git connection). Returns {projectId, name, productionUrl}.",
     input_schema: {
       type: "object",
       properties: { color: { type: "string" }, slug: { type: "string" } },
@@ -126,16 +126,13 @@ const TOOLS: Anthropic.Tool[] = [
     },
   },
   {
-    name: "triggerDeploy",
-    description: "Trigger a production deployment and wait until READY. Returns {deploymentUrl, state}.",
+    name: "deploySite",
+    description:
+      "Read the current <color>/<slug>/index.html from GitHub and upload it directly to the Vercel project as a production deployment. Waits until READY. Returns {deploymentUrl, state, name}.",
     input_schema: {
       type: "object",
-      properties: {
-        projectId: { type: "string" },
-        name: { type: "string" },
-        commitSha: { type: "string" },
-      },
-      required: ["projectId", "name"],
+      properties: { color: { type: "string" }, slug: { type: "string" } },
+      required: ["color", "slug"],
     },
   },
 ];
@@ -159,8 +156,8 @@ async function dispatchTool(name: string, input: any): Promise<string> {
         return JSON.stringify(await ensureVercelProject(input.color, input.slug));
       case "ensureRsvpSheet":
         return JSON.stringify(await ensureRsvpSheet(input.color, input.slug));
-      case "triggerDeploy":
-        return JSON.stringify(await triggerDeploy(input.projectId, input.name, input.commitSha));
+      case "deploySite":
+        return JSON.stringify(await deploySite(input.color, input.slug));
       default:
         return JSON.stringify({ error: `Unknown tool: ${name}` });
     }
